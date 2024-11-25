@@ -1,0 +1,154 @@
+#!/bin/bash
+
+HELP_MSG="
+pg_backup Script
+Usage: automated backup of PostgreSQL database with pg_dump
+
+Default config directory: /etc/pg_backup/pg_backup.config
+Options:
+-c <configpath>          Set config path. If skipped set by default
+-d <databasename>        Set database name for backup. REQUIRED
+"
+##########################
+# Setting default config #
+##########################
+
+CONFIGPATH=/etc/pg_backup/pg_backup.config
+source $CONFIGPATH
+
+###########################
+# CREATING PRINT FUNCTION #
+###########################
+
+print() {
+	if [ "$ENABLE_LOGGING" == "YES" -a "$VERBOSE" == "YES" ]; then
+		echo -e $(date -u)" - $1" | tee -a "$LOGPATH"
+	elif [ "$VERBOSE" == "NO" ]; then
+		echo -e $(date -u)" - $1" 1>&2 >> "$LOGPATH"
+	else
+		echo -e "$1" 1>&2
+	fi;
+}
+
+print "Script started"
+
+#####################
+# PARSING ARGUMENTS #
+#####################
+
+while [ $# -gt 0 ]; do
+	case $1 in
+		-c)
+			if [ -r "$2" ]; then
+				ALTERCONFIGPATH="$2"
+				source $ALTERCONFIGPATH
+				shift 2
+			else
+				print "Cannot read config \"$2\". Using default config"
+				if [ -z "$2" ]; then
+					shift 1
+				else
+					shift 2
+				fi;
+			fi
+			;;
+
+		-d)
+			if ! [ -z "$2" ]; then
+				DATABASE=$2
+				shift 2
+			else
+				print "FATAL ERROR. Database name can't be skipped. Use <help> for instructions"
+				exit 1
+			fi
+			;;
+
+		-h|help)
+			echo "$HELP_MSG"
+			exit 0
+			;;
+
+		*)
+			print "FATAL ERROR. Unknown option \"$1\""
+			exit 1
+			;;
+	esac
+done
+
+if [ -z "$DATABASE" ]; then
+	print "FATAL ERROR. Database name can't be skipped. Use <help> for instructions"
+	exit 1
+fi;
+
+print "PARSING | PASSED"
+
+####################
+# SETTING DEFAULTS #
+####################
+
+if [ ! $HOSTNAME ]; then
+	HOSTNAME="localhost"
+fi;
+
+if [ ! $USERNAME ]; then
+	USERNAME="postgres"
+fi;
+
+###################################
+# CHECKING IF USER CAN DO BACKUPS #
+###################################
+
+if [ "$BACKUP_USER" != "" -a "$(id -un)" != "$BACKUP_USER" ]; then
+	print "FATAL ERROR. This script must be run as $BACKUP_USER. Exiting..."
+	exit 1
+else
+	BACKUP_USER="$(id -un)"
+fi;
+
+##########
+# BACKUP #
+##########
+
+CURRENT_DIR=$BACKUP_DIR/$DATABASE
+
+if [ ! -d $CURRENT_DIR ]; then
+	if mkdir -p $CURRENT_DIR; then
+		print "Directory "$CURRENT_DIR" is created OK"
+	else
+		print "FATAL ERROR. Directory "$CURRENT_DIR" creation fault"
+		exit 1
+	fi;
+else
+	print "Directory "$CURRENT_DIR" is alreary exists. Going to backup"
+fi;
+
+SQLFILE=$CURRENT_DIR/$DATABASE-$(date +%d-%m-%Y_%H:%M:%S).sql
+ZIPFILE=$CURRENT_DIR/$DATABASE-$(date +%d-%m-%Y_%H:%M:%S).zip
+
+
+
+if sudo -u "$USERNAME" pg_dump -c "$DATABASE" 2>/dev/null > $SQLFILE; then
+	print "$SQLFILE is backed up OK"
+else
+	print "FATAL ERROR. $SQLFILE backup fault"
+	print "Removing $CURRENT_DIR..."
+	rm -rf $CURRENT_DIR
+	exit 1
+fi;
+
+if gzip -c $SQLFILE > $ZIPFILE; then
+	print "$ZIPFILE backup compressing OK"
+else
+	print "FATAL ERROR. $ZIPFILE backup compressing fault"
+	exit 1
+fi;
+
+rm $SQLFILE
+
+print "$DATABASE backup is created OK"
+
+##################################
+# DELETE EXPIRED BACKUPS AND LOGS#
+##################################
+
+find $CURRENT_DIR -mtime +$DAYS_TO_KEEP -delete
